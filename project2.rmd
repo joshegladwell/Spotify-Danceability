@@ -1,0 +1,761 @@
+---
+title: "Predicting Popularity of a Song on Spotify"
+author: Brad Pickett, Josh Gladwell, & Palmer Flood
+output: html_document
+---
+
+<style type="text/css">
+h1.title {
+font-size: 40px;
+text-align: center;
+}
+h4.author {
+font-size: 40px;
+text-align: center;
+}
+</style>
+
+
+```{r, include = FALSE}
+# Load Libraries
+library(dplyr)
+library(tidyverse)
+library(ggfortify)  
+library(car)  
+library(corrplot)  
+library(bestglm)
+library(glmnet)
+library(lubridate)
+options(scipen=999) # no scientific notation
+```
+
+
+### Background and Introduction
+
+
+### Methods and Results
+
+Music that makes one feel like dancing, that is the subject of our study. In an effort to understand the impact of the musical structure of a song on its "Danceability" score on Spotify, we obtained a data set that contains information for 142552 different songs on Spotify. We will be looking at the last 5 years of songs, so 2015 - 2020, which is a total of 11,656 songs. The data comes from an online database at https://www.kaggle.com/yamaerenay/spotify-dataset-19212020-160k-tracks and we downloaded the data set (a .csv file) on October 24, 2020.
+
+The following table displays the variable names in this data set, along with their descriptions (descriptions were acquired on https://developer.spotify.com/documentation/web-api/reference/tracks/get-audio-features/).
+
+Variable       | Description
+-------------- | -------------
+acousticness   | A confidence measure from 0.0 to 1.0 of whether the track is acoustic.
+danceability    | how suitable a track is for dancing based on a combination of musical elements including tempo, rhythm stability, beat strength, and overall regularity. A value of 0.0 is least danceable and 1.0 is most danceable. 
+energy  | perceptual measure of intensity and activity from 0.0 to 1.0
+duration_ms    | duration of track in milliseconds (Integer typically ranging from 200k to 300k)
+instrumentalness   |  whether a track contains no vocals from 0.0 to 1.0 (1.0 being no vocal content)
+valence        | from 0.0 to 1.0 describing the musical positiveness conveyed by a track. Tracks with high valence sound more positive (e.g. happy, cheerful, euphoric), while tracks with low valence sound more negative (e.g. sad, depressed, angry)
+tempo  |  overall estimated tempo of a track in beats per minute (BPM)
+liveness   | Detects the presence of an audience in the recording from 0.0 to 1.0
+loudness | Loudness is the quality of a sound that is the primary psychological correlate of physical strength (amplitude). Values typical range between -60 and 0 db
+speechiness      | detects the presence of spoken words in a track. The more exclusively speech-like the recording (e.g. talk show, audio book, poetry), the closer to 1.0 the attribute value
+explicit   |  Whether or not the song is determined to be explicit (1 = explicit, 0 = not explicit)
+
+### Hypotheses to test
+
+Taking from our own experience with music and spotify, we hypothesize that level of energy will have a positive effect on danceability, that as a song is more energetic it will increase its danceability We hypothesize this due to a lot of dance songs and what is played on the radio and top of the charts tend to be more energetic. We will test this hypothesis by determining whether or not energy has a statistically significant positive effect on popularity in the linear model. 
+
+We also hypothesize that a song with high valence would be danceable, thinking that dancing music is often meant to create a mood, and the more positive or happy a song sounds the more likely people would want to listen to it. We will test this hypothesis by determining whether or not valance has a statistically significant positive effect on danceability in the linear model. 
+
+Another hypothesis is that as a song is more speechy it will become less danceable. We will test this hypothesis by determining whether or not speechiness has a statistically significant negative effect on popularity in the linear model. 
+
+We start by applying basic summary and exploratory statistics to this data to better understand the data and identify trends.
+
+```{r setup, include=FALSE}
+library(dplyr)
+# read in data
+data <- read.csv("spotify_data.csv", header = TRUE, stringsAsFactors = TRUE)
+
+spotify <- data %>% 
+  filter(
+    #danceability != 0,
+    year >= 2015
+  ) 
+
+
+spotify <- spotify[,c(3,6,1,4,5,8,10,11,16,17,18)]
+ # reorder variables, take out name, area, year
+
+# clean data, only keep songs on danceability score index, and >= 2010
+head(spotify)
+summary(spotify)
+
+
+
+corrplot(cor(spotify), type = "upper") # correlation matrix plot
+
+cor(spotify) # correlation matrix values
+
+# Scatter plot of Quantitative Variable:
+plot(spotify, pch = ".")
+
+# Boxplot of Categorical Variable
+
+ggplot(data = spotify, mapping = aes(x = as.factor(explicit), y = danceability)) +
+  geom_boxplot() +
+   xlab("Explicit or Not (0 = Not, 1 = Explicit)") +
+  ylab("Danceability") +
+  ggtitle("Dancability v Explicitness of Song") +
+  theme(aspect.ratio = 1) # boxplot
+
+```
+
+Based on the exploratory analysis above we learn some things about our data. For one it appears that each variable has some sort of correlation with Danceability, though none of them being particularly too strong. Valence and Loudness have the strongest positive correlation at roughly 0.422 and .427 respectively, while instrumentalness has the strongest negative correlation at roughly -0.43 We do learn about some possible multicollinearity issues, seeing a strong negative correlation between loudness and acousticness also with instrumentalness with correlations of -0.55 and -0.69 respectively (which makes sense as most acoustic or instrumental songs are usually softer/quieter songs). Another possible multicollinearity issue is between energy and accousticness with a negative correlation of -.65 Another possible multicollinearity issue is the moderately strong correlation between loudness and energy of a song, with a correlation of 0.69. 
+
+We will investigate these possible multicollinearity issues in the checking of assumptions. 
+
+### EDA
+
+```{r}
+# Fit linear model: 
+
+lm.spotify <- lm(danceability ~., data = spotify)
+
+summary(lm.spotify)
+#spotify$residuals <- lm.spotify$residuals
+#spotify$fitted.values <- lm.spotify$fitted.values
+
+```
+
+### Check VIF Values for Multicollinearity
+
+```{r}
+spotify.vif <- vif(lm.spotify)
+
+spotify.vif
+max(spotify.vif)
+mean(spotify.vif)
+
+```
+
+Checking for Multicollinearity, we find that the max VIF value for our coefficients is 3.79. The average VIF is 1.79, which once again is not that much greater than 1. This is encouraging because it is likely we can keep all of our variables in the model.
+
+We will test that below looking to variable selection methods to see what variables are kept using various methods. 
+
+### Variable Selection
+
+We will use variable selection methods in order to determine what variables are most necessary for the model. 
+
+```{r, fig.align='center'}
+col_order <- c(2,3,4,5,6,7,8,9,10,11,1) 
+
+spotify.reorder <- spotify[,col_order]
+
+str(spotify.reorder)
+
+# reorder variables & remove categorical
+```
+
+#### Apply the best subsets variable selection procedure to this data set, using "BIC".
+
+```{r, fig.align='center'}
+# Best Subsets method
+best.subsets.bic <- bestglm(spotify.reorder,
+                            IC = "BIC",
+                            method = "exhaustive",
+                            TopModels = 10,
+                            intercept = FALSE,
+                            t=100)
+
+summary(best.subsets.bic$BestModel)
+```
+
+#### Apply the forward selection procedure to this data set, using "BIC"
+
+```{r, fig.align='center'}
+# Forward selection method
+forward.bic <- bestglm(spotify.reorder,
+                            IC = "BIC",
+                            method = "forward",
+                            intercept = FALSE,
+                            TopModels = 10)
+
+summary(forward.bic$BestModel)
+```
+
+#### Apply the backward selection procedure to this data set, using "BIC"
+
+```{r, fig.align='center'}
+# Backwards selection method
+backwards.bic <- bestglm(spotify.reorder,
+                            IC = "BIC",
+                            method = "backward",
+                            intercept = FALSE,
+                            TopModels = 10)
+
+summary(backwards.bic$BestModel)
+```
+
+#### Apply the sequential replacement selection procedure to this data set, using "BIC"
+
+```{r, fig.align='center'}
+# Sequential replacement method
+seqrep.bic <- bestglm(spotify.reorder,
+                            IC = "BIC",
+                            method = "seqrep",
+                            intercept = FALSE,
+                            TopModels = 10,
+                      t=100)
+
+summary(seqrep.bic$BestModel)
+
+```
+
+#### Apply LASSO procedure to this data set, using MSE.
+
+```{r, fig.align='center'}
+spotify.reorder.x <- as.matrix(spotify.reorder[, 2:length(spotify.reorder)-1]) # create x var matrix
+spotify.reorder.y <- spotify.reorder[, length(spotify.reorder)] # isolate y variable
+
+spotify.reorder.lasso.cv <- cv.glmnet(x = spotify.reorder.x, y = spotify.reorder.y,
+                           type.measure = "mse", alpha = 1) # Lasso method
+
+coef(spotify.reorder.lasso.cv, s = "lambda.min")
+coef(spotify.reorder.lasso.cv, s = "lambda.1se")
+
+```
+
+#### Apply Elastic Net procedure to this data set, using "BIC"
+
+```{r, fig.align='center'}
+spotify.reorder.enet.cv <- cv.glmnet(x = spotify.reorder.x, y = spotify.reorder.y,
+                           type.measure = "mse", alpha = 0.5) # Elastic Net method
+
+coef(spotify.reorder.enet.cv, s = "lambda.min")
+coef(spotify.reorder.enet.cv, s = "lambda.1se")
+```  
+
+Every one of the variable selection methods had all 9 predictors kept in the model. This will lead us to keep the variables we started with going forward. 
+
+#### Interactions
+We are specifically looking for significant interactions between the different variables that we are hypothesizing to have a significant effect on danceability (see "Hypotheses to test" above). We will test for significant interactions between energy and valence, energy and speechiness, and valence and speechiness.
+```{r, fig.align='center'}
+lm.spotify.inter <- lm(danceability ~ explicit + acousticness +
+                         duration_ms + energy + instrumentalness +
+                         liveness + loudness + speechiness + tempo +
+                         valence + energy:valence + energy:speechiness + 
+                         valence:speechiness, 
+                       data = spotify)
+
+summary(lm.spotify.inter)
+```
+
+Seeing that these interactions do have a significant effect on danceability, we will now test to see whether our model is better with the interaction terms or without them.
+
+```{r, fig.align='center'}
+anova(lm.spotify, lm.spotify.inter)
+```
+
+Based on the test, we conclude that the multiple linear model with the interactions is better (meaning the interactions likely have a significant effect on danceability). We will now check our assumptions for multiple linear regression.
+
+However, in performing the following diagnostics to check the assumptions of multiple linear regression, the presence of the interaction terms makes the model unfit for analysis due to the presence of multicollinearity. We will proceed with checking the assumptions using the model with no interaction terms.
+
+## Linearity
+```{r, fig.align='center'}
+# Add residuals and predicted values to linear model
+spotify$residuals <- lm.spotify$residuals
+spotify$fitted.values <- lm.spotify$fitted.values
+
+# Plots for linearity of 'explicit' variable
+
+spotify$explicit.factor <- factor(spotify$explicit)
+
+spotify.orig <- spotify[, c(1, 14, 3:11)]
+
+lm.spotify.plot <- lm(danceability ~ explicit.factor + acousticness +
+                         duration_ms + energy + instrumentalness +
+                         liveness + loudness + speechiness + tempo +
+                         valence, 
+                       data = spotify)
+
+# For acousticness
+ggplot(spotify.orig, aes(x = acousticness, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For duration_ms
+ggplot(spotify.orig, aes(x = duration_ms, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For energy
+ggplot(spotify.orig, aes(x = energy, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For instrumentalness
+ggplot(spotify.orig, aes(x = instrumentalness, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For liveness
+ggplot(spotify.orig, aes(x = liveness, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For loudness
+ggplot(spotify.orig, aes(x = loudness, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For speechiness
+ggplot(spotify.orig, aes(x = speechiness, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For tempo
+ggplot(spotify.orig, aes(x = tempo, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For valence
+ggplot(spotify.orig, aes(x = valence, y = danceability, 
+                        color = explicit.factor)) +
+  geom_point(size = 1) +
+  theme_bw() +
+  geom_smooth(method = "lm", 
+              mapping = aes(y = predict(lm.spotify.plot, spotify.orig))) +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# Residuals vs. Fitted Values Plot
+autoplot(lm.spotify, which = 1, ncol = 1, nrow = 1) +
+  theme_bw() +
+  theme(aspect.ratio = 1)
+
+```
+
+```{r, fig.align='center'}
+# Scatterplot Matrix
+plot(spotify, pch = ".")
+
+```
+
+Based on the plots that map the linearity of the categorical variable, 'explicit', the data seems generally linear. There are a lot of cloud-shaped formations, indicating weak correlation. Based on the scatterplot matrix it's really hard to conclude whether or not our model holds the assumption for linearity. The point distributions in some of them are quite irregular, but for the most part they seem to be just clouds of data, which is good. The residuals vs. fitted values plot provides much stronger evidence for linearity. The blue line closely follows zero and shows no severe curves.
+
+## Independent residuals
+The residuals of our data are independent due to the fact that all observations are unique. Each observation is an individual song and none of them are repeated. The assumption for independent residuals is met.
+
+## Residuals normally distributed and centered at zero
+```{r, fig.align='center'}
+# Histogram
+ggplot(data = spotify, mapping = aes(x = residuals)) + 
+  geom_histogram(mapping = aes(y = ..density..), binwidth = .05) +
+  stat_function(fun = dnorm, color = "red", size = 2,
+                args = list(mean = mean(spotify$residuals), 
+                            sd = sd(spotify$residuals))) +
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# Normal Probability Plot
+autoplot(lm.spotify, which = 2, ncol = 1, nrow = 1) +
+  theme(aspect.ratio = 1)
+
+```
+
+The histogram and normal probability plot show almost perfectly normal distribution of the residuals. The distribution is also centered at zero. The assumption for normal distribution is met.
+
+## Residuals have equal variance (homoscedasticity)
+```{r, fig.align='center'}
+# Residuals vs. Fitted Values Plot
+autoplot(lm.spotify.inter, which = 1, ncol = 1, nrow = 1) +
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# Brown-Forsythe Test
+grp <- as.factor(c(rep("lower", floor(dim(spotify)[1] / 2)), 
+                   rep("upper", ceiling(dim(spotify)[1] / 2))))
+leveneTest(spotify[order(spotify$danceability), "residuals"] ~ grp, center = median)
+```
+
+There is some concern in the variance of the data as shown in the residuals vs. fitted values plot. Because the observations are so centered in the middle, the variance seems to start quite small, widen out, and then thin out again. The Brown-Forsythe test gives a very significant p-value, leading us to reject the null hypothesis of constant variance. This assumption is not met.
+
+## The model describes all observations
+```{r, fig.align='center'}
+# DFBETAS
+# For explicit
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(explicit))) +
+  ylab("Absolute Value of DFBETAS for explicit") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r}
+# For acousticness
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(acousticness))) +
+  ylab("Absolute Value of DFBETAS for acousticness") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For duration_ms
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(duration_ms))) +
+  ylab("Absolute Value of DFBETAS for duration_ms") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For energy
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(energy))) +
+  ylab("Absolute Value of DFBETAS for energy") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For instrumentalness
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(instrumentalness))) +
+  ylab("Absolute Value of DFBETAS for instrumentalness") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# For liveness
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(liveness))) +
+  ylab("Absolute Value of DFBETAS for liveness") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+
+```
+
+```{r, fig.align='center'}
+# For loudness
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(loudness))) +
+  ylab("Absolute Value of DFBETAS for loudness") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+
+```
+
+```{r, fig.align='center'}
+# For speechiness
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(speechiness))) +
+  ylab("Absolute Value of DFBETAS for speechiness") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+
+```
+
+```{r, fig.align='center'}
+# For tempo
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(tempo))) +
+  ylab("Absolute Value of DFBETAS for tempo") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+
+```
+
+```{r, fig.align='center'}
+# For valence
+spotify.dfbetas <- as.data.frame(dfbetas(lm.spotify))
+spotify.dfbetas$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dfbetas) + 
+  geom_point(mapping = aes(x = obs, y = abs(valence))) +
+  ylab("Absolute Value of DFBETAS for valence") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 / sqrt(length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+
+```
+
+```{r, fig.align='center'}
+# DFFITS
+spotify.dffits <- data.frame("dffits" = dffits(lm.spotify))
+spotify.dffits$obs <- 1:length(spotify$danceability)
+
+ggplot(data = spotify.dffits) + 
+  geom_point(mapping = aes(x = obs, y = abs(dffits))) +
+  ylab("Absolute Value of DFFITS for danceability") +
+  xlab("Observation Number") +
+  geom_hline(mapping = aes(yintercept = 1),
+             color = "red", linetype = "dashed") +  # for n <= 30
+  geom_hline(mapping = aes(yintercept = 2 * 
+                             sqrt(6 / length(obs))),
+             color = "red", linetype = "dashed") +  # for n > 30
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+
+```{r, fig.align='center'}
+# Boxplot
+ggplot(data = spotify, mapping = aes(y = residuals)) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(aspect.ratio = 1)
+```
+Based on the DFBETAS and DFFITS visualizations, it seems that the model describes all observations. There is a potential influential point in the DFBETAS plot for loudness, but it's still close enough to the rest of the data not to present any concern. We conclude the assumption of no influential points to be met.
+
+## No more predictor variables required
+In terms of basic variables that describe the nature of the song, the predictor variables we have are not only all-inclusive but also quite descriptive. We are in no need of any other predictor variables for this model.
+
+## Multicollinearity
+```{r, fig.align='center'}
+# VIF
+spotify.vifs <- vif(lm.spotify)
+spotify.vifs
+
+max(spotify.vifs)
+mean(spotify.vifs)
+```
+With the maximum VIF at only about 3.7 and the mean not far above 1, we can see that there is no problem of multicollinearity. This assumption is met.
+
+### Transformation
+Because the assumption for homoscedasticity is not met, we will apply a box-cox transformation to the data to determine how it should be transformed:
+```{r}
+# Box cox transformation
+# Shift danceability so all values are positive (no zeros)
+spotify$danceability.shifted <- spotify$danceability + 1
+
+# Box cox
+bc <- boxCox(spotify$danceability.shifted ~ spotify$explicit +
+               spotify$acousticness + spotify$duration_ms +
+               spotify$energy + spotify$instrumentalness +
+               spotify$liveness + spotify$loudness +
+               spotify$speechiness + spotify$tempo + 
+               spotify$valence)
+bc$x[which.max(bc$y)]
+
+# Transforming data based on our lamda of 2
+spotify <- spotify %>%
+  mutate(
+    sqred.danceability = danceability ^ 2
+  )
+
+# Fitting a model to transformed data
+lm.spotify.trans <- lm(sqred.danceability ~., data = spotify)
+
+# Creating columns in the dataframe for transformed residuals
+# and fitted values
+spotify$trans.residuals <- lm.spotify.trans$residuals
+spotify$trans.fitted.values <- lm.spotify.trans$fitted.values
+```
+
+With a lamda of 2, we transformed danceability by squaring it to see if the homoscedasticity assumption would be met. There was no clear improvement in the transformed data's ability to meet the assumptions. After trying a variety of different transformations, we came to the conclusion that despite the homoscedasticity assumption not being met, the untransformed data is the closest we can get to meeting the assumptions for multiple linear regression. 
+
+##Assessing the model
+
+Root Mean Squared Error
+```{r}
+sqrt(summary(anova)[[1]][11, 2] / summary(anova)[[1]][11, 1])
+```
+
+The low RMSE value for our model indicates that the average error in predicting the outcome for our model is low.
+
+Calculating R^2
+```{r}
+summary(lm.spotify)
+```
+
+An R^2 value of 0.4647 means that approximately 46% of the variation in danceability of songs in our data can be explained by our predictor variables.
+
+Calculate Mean Absolute Error
+```{r}
+sum(abs(spotify$danceability - spotify$fitted.values)) / (length(spotify$danceability) - 2)
+```
+
+We have a Mean Absolute Error of 0.10 which represents a low average distance in the outcome and the model prediction of the outcome.
+
+##Statistical Inference
+
+Confidence Intervals for Slope
+```{r}
+confint(lm.spotify, level = 0.95)
+```
+We will look specifically at the variables mentioned in our hypotheses at the beginning of this project.
+
+We are 95% confident that as energy increases, the average danceability decreases by a value found in the interval .2684 and .2313. This contradicts our hypothesis that more energetic music leads to songs being rated with a higher danceability.
+
+We are 95% confident that as valence increases, the average danceability increases by a value found in the interval 0.2417 and 0.2646. This also matched our hypothesis that a higher valence (meaning happier, more upbeat) would lead to a song being rate with a higher danceability.
+
+We are 95% confident that as speechiness increases, the average danceability increases by a value found in the interval 0.1342 and 0.1796. This did not match our hypothesis, which was that danceability ratings would decrease as speechiness increased. At it's extreme, speechiness related to things like talk shows and podcasts, but one thing that is not specified in the description of the variables is if rap songs are rated with higher speechiness than non-rap songs, which could have a large impact on this variables effect on danceability.
+
+95% confidence Interval for the Mean where the song is explicit and every other value is the 75th percentile value found in summary(spotify)
+```{r}
+predict(lm.spotify,
+         newdata = data.frame(acousticness = 0.4260,
+                              explicit = 1,
+                              duration_ms = .233097,
+                              energy = 0.749,
+                              instrumentalness = .000195,
+                              liveness = 0.211,
+                              loudness = -5.010,
+                              speechiness = 0.1550,
+                              tempo = 140.94,
+                              valence = 0.616),
+         interval = "confidence",
+         level = 0.95)
+```
+
+We are 95% confident that when a song is explicit, and when all other predictors are given their 75th percentile values, the mean of danceability is found within the interval 0.7683 and 0.7896.
+
+95% prediction interval for an explicit song, where all other predictors hold the 75th percentile value.
+```{r}
+predict(lm.spotify,
+         newdata = data.frame(acousticness = 0.4260,
+                              explicit = 1,
+                              duration_ms = .233097,
+                              energy = 0.749,
+                              instrumentalness = .000195,
+                              liveness = 0.211,
+                              loudness = -5.010,
+                              speechiness = 0.1550,
+                              tempo = 140.94,
+                              valence = 0.616),
+         interval = "prediction",
+         level = 0.95)
+```
+
+We are 95% confident that when a song is explicit and all other predictors hold the value of their 75th percentile the value for danceability will fall between the interval 0.5269 and 1.0310.
+
+
+### Conclusion
+
+The purpose of this data was to help us better understand what makes a song more adept for dancing. Through our analysis we wanted to know whether or not energy and valence have a positive effect on dancability of a song. We were able to determine with 95% confidence that the musical structure metrics that positively affect dancability are explicitness, loudness of the song, speechiness, and valence. While the musical structure metrics that negatively affect danceability are acousticness, duration, energy, instrumentalness, liveness, and tempo of the song. 
+
+Overall we were surprised with some of these findings, seeing things like tempo, energy having a significant negative affect, as we would think of those things as adding to the vibe and making a song more adept for dancing, especially since Spotify had identified danceability to be determined based on a combination of "tempo, rhythm stability, beat strength, and overall regularity". Songs that fit the bill of being speechy, loud, explicit, and have more of an upbeat positive beat sound like they would fit in the Trap Music / Rap genre, which is a large portion of the dancing music used in dance clubs and the like. 
+
+If we were to make recommendations to an aspiritng artist who wanted to make a song that is popular for dancing we would suggest to make it loud, explicit, with high valence and a level of speechiness involved. 
